@@ -11,7 +11,7 @@ fn main() {
     let mut worstrng = rand::rngs::SmallRng::seed_from_u64(0);
     smol::block_on(async move {
         let long_sk = x25519_dalek::StaticSecret::new(&mut badrng);
-        let listener = sosistab::Listener::listen("[::]:12345", long_sk).await;
+        let listener = sosistab::Listener::listen("[::]:23456", long_sk).await;
         loop {
             let socket = listener.accept_session().await.unwrap();
             println!("accepted session");

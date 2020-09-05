@@ -114,16 +114,15 @@ async fn session_loop(
                         to_send.push(infal(recv_tosend.recv()).await);
                         false
                     });
-                    if res.await || to_send.len() > 16 {
+                    if res.await || to_send.len() >= 32 {
                         break &to_send;
                     }
                 }
             };
-            let run_len: u32 = to_send.iter().map(|b| b.len() + 2).sum::<usize>() as u32;
             // encode into raptor
             let encoded = FrameEncoder::new(loss_to_u8(cfg.target_loss))
                 .encode(measured_loss.load(Ordering::Relaxed), &to_send);
-            for bts in encoded {
+            for (idx, bts) in encoded.iter().enumerate() {
                 if frame_no % 1000 == 0 {
                     log::debug!(
                         "frame {}, measured loss {}",
@@ -136,10 +135,12 @@ async fn session_loop(
                         .send(DataFrame {
                             frame_no,
                             run_no,
-                            run_len,
-                            body: bts,
+                            run_idx: idx as u8,
+                            data_shards: to_send.len() as u8,
+                            parity_shards: (encoded.len() - to_send.len()) as u8,
                             high_recv_frame_no: high_recv_frame_no.load(Ordering::Relaxed),
                             total_recv_frames: total_recv_frames.load(Ordering::Relaxed),
+                            body: bts.clone(),
                         })
                         .await,
                 );
@@ -166,12 +167,13 @@ async fn session_loop(
             measured_loss.store(loss_to_u8(loss_calc.median), Ordering::Relaxed);
             high_recv_frame_no.fetch_max(new_frame.frame_no, Ordering::Relaxed);
             total_recv_frames.fetch_add(1, Ordering::Relaxed);
-            if let Some(output) =
-                decoder
-                    .lock()
-                    .await
-                    .input(new_frame.run_no, new_frame.run_len, &new_frame.body)
-            {
+            if let Some(output) = decoder.lock().await.input(
+                new_frame.run_no,
+                new_frame.run_idx,
+                new_frame.data_shards,
+                new_frame.parity_shards,
+                &new_frame.body,
+            ) {
                 for item in output {
                     let _ = send_input.try_send(item);
                 }
@@ -191,7 +193,7 @@ async fn session_loop(
                         .min(1.0),
                 down_recovered_loss: 1.0
                     - (decoder.correct_count as f64 / decoder.total_count as f64).min(1.0),
-                avg_run_len: decoder.ema_run_len,
+                avg_run_len: 0,
             };
             infal(req.send(response)).await;
         }
@@ -207,28 +209,30 @@ struct RunDecoder {
     top_run: u64,
     bottom_run: u64,
     decoders: HashMap<u64, FrameDecoder>,
-    correct: HashSet<u64>,
     total_count: u64,
     correct_count: u64,
 
-    ema_run_len: u64,
+    total_data_shards: u64,
+    total_parity_shards: u64,
 }
 
 impl RunDecoder {
-    fn input(&mut self, run_no: u64, total_len: u32, bts: &[u8]) -> Option<Vec<Bytes>> {
-        self.ema_run_len = self.ema_run_len as u64 * 255 / 256 + total_len as u64 / 256;
-        if self.correct.get(&run_no).is_some() {
-            return None;
-        }
+    fn input(
+        &mut self,
+        run_no: u64,
+        run_idx: u8,
+        data_shards: u8,
+        parity_shards: u8,
+        bts: &[u8],
+    ) -> Option<Vec<Bytes>> {
         if run_no >= self.bottom_run {
             if run_no > self.top_run {
                 self.top_run = run_no;
                 // advance bottom
                 while self.top_run - self.bottom_run > 100 {
-                    self.total_count += 1;
-                    self.decoders.remove(&self.bottom_run);
-                    if self.correct.remove(&self.bottom_run) {
-                        self.correct_count += 1;
+                    if let Some(dec) = self.decoders.remove(&self.bottom_run) {
+                        self.total_count += (dec.good_pkts() + dec.lost_pkts()) as u64;
+                        self.correct_count += dec.good_pkts() as u64
                     }
                     self.bottom_run += 1;
                 }
@@ -236,9 +240,8 @@ impl RunDecoder {
             let decoder = self
                 .decoders
                 .entry(run_no)
-                .or_insert_with(|| FrameDecoder::new(run_no, total_len));
-            if let Some(res) = decoder.decode(bts) {
-                self.correct.insert(run_no);
+                .or_insert_with(|| FrameDecoder::new(data_shards as usize, parity_shards as usize));
+            if let Some(res) = decoder.decode(bts, run_idx as usize) {
                 Some(res)
             } else {
                 None

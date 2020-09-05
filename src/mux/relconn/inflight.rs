@@ -30,7 +30,8 @@ impl Inflight {
         self.rtt.rto()
     }
 
-    pub fn mark_acked(&mut self, seqno: Seqno) {
+    pub fn mark_acked(&mut self, seqno: Seqno) -> bool {
+        let mut toret = false;
         // mark the right one
         if let Some(entry) = self.segments.front() {
             let first_seqno = entry.seqno;
@@ -39,6 +40,7 @@ impl Inflight {
                 if let Some(seg) = self.segments.get_mut(offset) {
                     seg.acked = true;
                     if seg.retrans == 0 {
+                        toret = true;
                         self.rtt
                             .record_sample(Instant::now().saturating_duration_since(seg.send_time));
                     }
@@ -59,6 +61,7 @@ impl Inflight {
                 }
             }
         }
+        toret
     }
 
     pub fn insert(&mut self, seqno: Seqno, msg: Message) {
@@ -142,7 +145,7 @@ impl RttCalculator {
             self.rttvar = self.rttvar * 3 / 4 + diff(self.srtt, sample) / 4;
             self.srtt = self.srtt * 7 / 8 + sample / 8;
         }
-        self.rto = self.srtt + (4 * self.rttvar).max(10);
+        self.rto = self.srtt + (4 * self.rttvar);
         // // delivery rate
         // self.dels_since_last += 1;
         // if self.dels_since_last >= 100 {
