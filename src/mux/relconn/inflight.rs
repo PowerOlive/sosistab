@@ -30,15 +30,18 @@ impl Inflight {
         self.rtt.bdp()
     }
 
-    pub fn pacing_interval(&self, cwnd: f64) -> Duration {
-        Duration::from_secs_f64(self.rtt.srtt as f64 / cwnd / 1000.0)
-    }
-
     pub fn len(&self) -> usize {
         self.segments.len()
     }
 
     pub fn inflight(&self) -> usize {
+        if self.inflight_count > self.segments.len() {
+            panic!(
+                "inflight_count = {}, segment len = {}",
+                self.inflight_count,
+                self.segments.len()
+            );
+        }
         self.inflight_count
     }
 
@@ -54,33 +57,36 @@ impl Inflight {
             if seqno >= first_seqno {
                 let offset = (seqno - first_seqno) as usize;
                 if let Some(seg) = self.segments.get_mut(offset) {
-                    seg.acked = true;
-                    self.inflight_count -= 1;
-                    if seg.retrans == 0 {
-                        toret = true;
-                        self.rtt
-                            .record_sample(Instant::now().saturating_duration_since(seg.send_time));
-                    }
-                    // time-based fast retransmit
-                    let fast_retrans_thresh = self.rtt.srtt / 2;
-                    let seg = seg.clone();
-                    for cand in self.segments.iter_mut() {
-                        if !cand.acked
-                            && cand.retrans == 0
-                            && seg
-                                .send_time
-                                .saturating_duration_since(cand.send_time)
-                                .as_millis() as u64
-                                > fast_retrans_thresh
-                        {
-                            self.fast_retrans.insert(cand.seqno);
-                            cand.retrans += 1;
+                    if !seg.acked {
+                        seg.acked = true;
+                        self.inflight_count -= 1;
+                        if seg.retrans == 0 {
+                            self.rtt.record_sample(
+                                Instant::now().saturating_duration_since(seg.send_time),
+                            );
+                        }
+                        // time-based fast retransmit
+                        let fast_retrans_thresh = self.rtt.srtt / 2;
+                        let seg = seg.clone();
+                        for cand in self.segments.iter_mut() {
+                            if !cand.acked
+                                && cand.retrans == 0
+                                && seg
+                                    .send_time
+                                    .saturating_duration_since(cand.send_time)
+                                    .as_millis() as u64
+                                    > fast_retrans_thresh
+                            {
+                                self.fast_retrans.insert(cand.seqno);
+                                cand.retrans += 1;
+                            }
                         }
                     }
                 }
                 // shrink if possible
                 while self.len() > 0 && self.segments.front().unwrap().acked {
                     self.segments.pop_front();
+                    toret = true;
                 }
             }
         }

@@ -28,6 +28,7 @@ impl Listener {
         addr: impl AsyncToSocketAddrs,
         long_sk: x25519_dalek::StaticSecret,
     ) -> Self {
+        // let addr = async_net::resolve(addr).await;
         let socket = UdpSocket::bind(addr).await.unwrap();
         let cookie = crypt::Cookie::new((&long_sk).into());
         let (send, recv) = async_channel::unbounded();
@@ -221,7 +222,7 @@ impl ListenerActor {
                                                 })
                                             };
                                             let mut session = Session::new(SessionConfig {
-                                                latency: Duration::from_millis(1),
+                                                latency: Duration::from_millis(10),
                                                 target_loss: 0.005,
                                                 send_frame: session_output_send,
                                                 recv_frame: session_input_recv,
