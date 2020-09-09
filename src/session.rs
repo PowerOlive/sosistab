@@ -58,8 +58,9 @@ impl Session {
 
     /// Takes a Bytes to be sent and stuffs it into the session.
     pub async fn send_bytes(&self, to_send: Bytes) {
-        drop(self.send_tosend.try_send(to_send));
-        smol::future::yield_now().await;
+        if self.send_tosend.try_send(to_send).is_err() {
+            log::warn!("overflowed send buffer at session!");
+        }
     }
 
     /// Waits until the next application input is decoded by the session.
@@ -92,6 +93,7 @@ async fn session_loop(
     let measured_loss = AtomicU8::new(0);
     let high_recv_frame_no = AtomicU64::new(0);
     let total_recv_frames = AtomicU64::new(0);
+
     // sending loop
     let send_loop = async {
         let mut frame_no = 0u64;
@@ -102,7 +104,7 @@ async fn session_loop(
             let to_send = {
                 to_send.clear();
                 // get as much tosend as possible within the timeout
-                // this lets us do raptorq at maximum efficiency
+                // this lets us do it at maximum efficiency
                 to_send.push(infal(recv_tosend.recv()).await);
                 let mut timeout = smol::Timer::after(cfg.latency);
                 loop {
@@ -114,16 +116,15 @@ async fn session_loop(
                         to_send.push(infal(recv_tosend.recv()).await);
                         false
                     });
-                    if res.await || to_send.len() > 16 {
+                    if res.await || to_send.len() >= 16 {
                         break &to_send;
                     }
                 }
             };
-            let run_len: u32 = to_send.iter().map(|b| b.len() + 2).sum::<usize>() as u32;
             // encode into raptor
             let encoded = FrameEncoder::new(loss_to_u8(cfg.target_loss))
                 .encode(measured_loss.load(Ordering::Relaxed), &to_send);
-            for bts in encoded {
+            for (idx, bts) in encoded.iter().enumerate() {
                 if frame_no % 1000 == 0 {
                     log::debug!(
                         "frame {}, measured loss {}",
@@ -136,10 +137,12 @@ async fn session_loop(
                         .send(DataFrame {
                             frame_no,
                             run_no,
-                            run_len,
-                            body: bts,
+                            run_idx: idx as u8,
+                            data_shards: to_send.len() as u8,
+                            parity_shards: (encoded.len() - to_send.len()) as u8,
                             high_recv_frame_no: high_recv_frame_no.load(Ordering::Relaxed),
                             total_recv_frames: total_recv_frames.load(Ordering::Relaxed),
+                            body: bts.clone(),
                         })
                         .await,
                 );
@@ -148,7 +151,7 @@ async fn session_loop(
             run_no += 1;
         }
     };
-    let mut decoder = Lock::new(RunDecoder::default());
+    let decoder = Lock::new(RunDecoder::default());
     // receive loop
     let recv_loop = async {
         let mut rp_filter = ReplayFilter::new(0);
@@ -166,12 +169,13 @@ async fn session_loop(
             measured_loss.store(loss_to_u8(loss_calc.median), Ordering::Relaxed);
             high_recv_frame_no.fetch_max(new_frame.frame_no, Ordering::Relaxed);
             total_recv_frames.fetch_add(1, Ordering::Relaxed);
-            if let Some(output) =
-                decoder
-                    .lock()
-                    .await
-                    .input(new_frame.run_no, new_frame.run_len, &new_frame.body)
-            {
+            if let Some(output) = decoder.lock().await.input(
+                new_frame.run_no,
+                new_frame.run_idx,
+                new_frame.data_shards,
+                new_frame.parity_shards,
+                &new_frame.body,
+            ) {
                 for item in output {
                     let _ = send_input.try_send(item);
                 }
@@ -191,7 +195,7 @@ async fn session_loop(
                         .min(1.0),
                 down_recovered_loss: 1.0
                     - (decoder.correct_count as f64 / decoder.total_count as f64).min(1.0),
-                avg_run_len: decoder.ema_run_len,
+                avg_run_len: 0,
             };
             infal(req.send(response)).await;
         }
@@ -207,28 +211,30 @@ struct RunDecoder {
     top_run: u64,
     bottom_run: u64,
     decoders: HashMap<u64, FrameDecoder>,
-    correct: HashSet<u64>,
     total_count: u64,
     correct_count: u64,
 
-    ema_run_len: u64,
+    total_data_shards: u64,
+    total_parity_shards: u64,
 }
 
 impl RunDecoder {
-    fn input(&mut self, run_no: u64, total_len: u32, bts: &[u8]) -> Option<Vec<Bytes>> {
-        self.ema_run_len = self.ema_run_len as u64 * 255 / 256 + total_len as u64 / 256;
-        if self.correct.get(&run_no).is_some() {
-            return None;
-        }
+    fn input(
+        &mut self,
+        run_no: u64,
+        run_idx: u8,
+        data_shards: u8,
+        parity_shards: u8,
+        bts: &[u8],
+    ) -> Option<Vec<Bytes>> {
         if run_no >= self.bottom_run {
             if run_no > self.top_run {
                 self.top_run = run_no;
                 // advance bottom
                 while self.top_run - self.bottom_run > 100 {
-                    self.total_count += 1;
-                    self.decoders.remove(&self.bottom_run);
-                    if self.correct.remove(&self.bottom_run) {
-                        self.correct_count += 1;
+                    if let Some(dec) = self.decoders.remove(&self.bottom_run) {
+                        self.total_count += (dec.good_pkts() + dec.lost_pkts()) as u64;
+                        self.correct_count += dec.good_pkts() as u64
                     }
                     self.bottom_run += 1;
                 }
@@ -236,9 +242,8 @@ impl RunDecoder {
             let decoder = self
                 .decoders
                 .entry(run_no)
-                .or_insert_with(|| FrameDecoder::new(run_no, total_len));
-            if let Some(res) = decoder.decode(bts) {
-                self.correct.insert(run_no);
+                .or_insert_with(|| FrameDecoder::new(data_shards as usize, parity_shards as usize));
+            if let Some(res) = decoder.decode(bts, run_idx as usize) {
                 Some(res)
             } else {
                 None

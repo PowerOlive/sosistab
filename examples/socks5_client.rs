@@ -22,7 +22,7 @@ fn main() {
             smol::unblock(move || {
                 (&args
                     .get(1)
-                    .unwrap_or(&"sosistab-jp-test.labooyah.be:12345".to_string()))
+                    .unwrap_or(&"sosistab-jp-test.labooyah.be:23456".to_string()))
                     .to_socket_addrs()
                     .unwrap()
                     .next()

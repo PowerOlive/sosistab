@@ -1,7 +1,6 @@
 use crate::*;
 use async_channel::{Receiver, Sender};
 use async_dup::Arc;
-use async_lock::Lock;
 use async_net::UdpSocket;
 use bytes::Bytes;
 use smol::prelude::*;
@@ -87,11 +86,10 @@ async fn init_session(
     shared_sec: blake3::Hash,
     remote_addr: SocketAddr,
 ) -> std::io::Result<Session> {
-    const SHARDS: u8 = 4;
+    const SHARDS: u8 = 6;
 
-    let (send_frame_out, recv_frame_out) = async_channel::bounded::<msg::DataFrame>(100);
-    let (send_frame_in, recv_frame_in) = async_channel::bounded::<msg::DataFrame>(100);
-    let recv_frame_out = Lock::new(recv_frame_out);
+    let (send_frame_out, recv_frame_out) = async_channel::bounded::<msg::DataFrame>(1000);
+    let (send_frame_in, recv_frame_in) = async_channel::bounded::<msg::DataFrame>(1000);
     let backhaul_tasks: Vec<_> = (0..SHARDS)
         .map(|i| {
             runtime::spawn(client_backhaul_once(
@@ -106,8 +104,8 @@ async fn init_session(
         })
         .collect();
     let mut session = Session::new(SessionConfig {
-        latency: std::time::Duration::from_millis(1),
-        target_loss: 0.01,
+        latency: std::time::Duration::from_millis(10),
+        target_loss: 0.005,
         send_frame: send_frame_out,
         recv_frame: recv_frame_in,
     });
@@ -121,7 +119,7 @@ async fn client_backhaul_once(
     cookie: crypt::Cookie,
     resume_token: Bytes,
     send_frame_in: Sender<msg::DataFrame>,
-    recv_frame_out: Lock<Receiver<msg::DataFrame>>,
+    recv_frame_out: Receiver<msg::DataFrame>,
     shard_id: u8,
     remote_addr: SocketAddr,
     shared_sec: blake3::Hash,
@@ -159,7 +157,7 @@ async fn client_backhaul_once(
         };
         let up_crypter = up_crypter.clone();
         let up = async {
-            let df = recv_frame_out.lock().await.recv().await.ok()?;
+            let df = recv_frame_out.recv().await.ok()?;
             let encrypted = up_crypter.pad_encrypt(df, 1300);
             Some(Evt::Outgoing(encrypted))
         };

@@ -33,8 +33,13 @@ pub struct DataFrame {
     pub frame_no: u64,
     /// Strictly incrementing counter of runs
     pub run_no: u64,
-    /// Length of current run, in wrapped payload bytes
-    pub run_len: u32,
+    /// Run index
+    pub run_idx: u8,
+    /// Data shards in this run.
+    pub data_shards: u8,
+    /// Parity shards in this run.
+    pub parity_shards: u8,
+    /// Index.
     /// Highest delivered frame
     pub high_recv_frame_no: u64,
     /// Total delivered frames
