@@ -86,7 +86,7 @@ async fn init_session(
     shared_sec: blake3::Hash,
     remote_addr: SocketAddr,
 ) -> std::io::Result<Session> {
-    const SHARDS: u8 = 4;
+    const SHARDS: u8 = 6;
 
     let (send_frame_out, recv_frame_out) = async_channel::bounded::<msg::DataFrame>(100);
     let (send_frame_in, recv_frame_in) = async_channel::bounded::<msg::DataFrame>(100);
@@ -104,7 +104,7 @@ async fn init_session(
         })
         .collect();
     let mut session = Session::new(SessionConfig {
-        latency: std::time::Duration::from_millis(5),
+        latency: std::time::Duration::from_millis(1),
         target_loss: 0.005,
         send_frame: send_frame_out,
         recv_frame: recv_frame_in,

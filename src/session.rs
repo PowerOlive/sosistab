@@ -5,9 +5,12 @@ use async_channel::{Receiver, Sender};
 use async_lock::Lock;
 use bytes::Bytes;
 use smol::prelude::*;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    num::NonZeroU32,
+};
 
 async fn infal<T, E, F: Future<Output = std::result::Result<T, E>>>(fut: F) -> T {
     match fut.await {
@@ -38,8 +41,8 @@ pub struct Session {
 impl Session {
     /// Creates a tuple of a Session and also a channel with which stuff is fed into the session.
     pub fn new(cfg: SessionConfig) -> Self {
-        let (s2, r2) = async_channel::bounded(1000);
-        let (s4, r4) = async_channel::bounded(1000);
+        let (s2, r2) = async_channel::bounded(10000);
+        let (s4, r4) = async_channel::bounded(10000);
         let (s, r) = async_channel::unbounded();
         let task = runtime::spawn(session_loop(cfg, r2, s4, r));
         Session {
@@ -59,7 +62,6 @@ impl Session {
     /// Takes a Bytes to be sent and stuffs it into the session.
     pub async fn send_bytes(&self, to_send: Bytes) {
         drop(self.send_tosend.try_send(to_send));
-        smol::future::yield_now().await;
     }
 
     /// Waits until the next application input is decoded by the session.
@@ -102,7 +104,7 @@ async fn session_loop(
             let to_send = {
                 to_send.clear();
                 // get as much tosend as possible within the timeout
-                // this lets us do raptorq at maximum efficiency
+                // this lets us do it at maximum efficiency
                 to_send.push(infal(recv_tosend.recv()).await);
                 let mut timeout = smol::Timer::after(cfg.latency);
                 loop {
@@ -114,7 +116,7 @@ async fn session_loop(
                         to_send.push(infal(recv_tosend.recv()).await);
                         false
                     });
-                    if res.await || to_send.len() >= 32 {
+                    if res.await || to_send.len() >= 16 {
                         break &to_send;
                     }
                 }
@@ -149,7 +151,7 @@ async fn session_loop(
             run_no += 1;
         }
     };
-    let mut decoder = Lock::new(RunDecoder::default());
+    let decoder = Lock::new(RunDecoder::default());
     // receive loop
     let recv_loop = async {
         let mut rp_filter = ReplayFilter::new(0);

@@ -46,19 +46,21 @@ impl<T: Clone> Default for Reorderer<T> {
 
 impl<T: Clone> Reorderer<T> {
     pub fn insert(&mut self, seq: Seqno, item: T) -> bool {
-        if seq >= self.min && seq <= self.min + 10000 {
-            self.pkts.insert(seq, item);
+        if seq >= self.min && seq <= self.min + 30000 {
+            if self.pkts.insert(seq, item).is_some() {
+                eprintln!("spurious retransmission of {} received", seq);
+            }
             true
         } else {
             log::trace!("rejecting (seq={}, min={})", seq, self.min);
             false
         }
     }
-    pub fn take(&mut self, output: &Sender<T>) -> u64 {
+    pub async fn take(&mut self, output: &Sender<T>) -> u64 {
         let mut times = 0;
         for idx in self.min.. {
             if let Some(item) = self.pkts.get(&idx) {
-                if output.try_send(item.clone()).is_ok() {
+                if output.send(item.clone()).await.is_ok() {
                     self.pkts.remove(&idx);
                 } else {
                     break;

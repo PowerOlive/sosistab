@@ -43,6 +43,7 @@ scopeguard="1"
 async-net="1"
 reed-solomon-erasure={version="2", features=["pure-rust"]}
 indexmap="1.5"
+governor="0.3"
 
 [dev-dependencies]
 chacha20poly1305={version="0.5", features=["reduced-round"]}

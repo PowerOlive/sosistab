@@ -2,9 +2,11 @@ use crate::*;
 use async_channel::{Receiver, Sender};
 use bytes::Bytes;
 use mux::structs::{Message, RelKind, Reorderer, Seqno};
+use rand::Rng;
 use smol::prelude::*;
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::BTreeSet,
+    collections::VecDeque,
     time::{Duration, Instant},
 };
 mod asyncrw;
@@ -21,8 +23,8 @@ pub struct RelConn {
 
 impl RelConn {
     pub(crate) fn new(state: RelConnState, output: Sender<Message>) -> (Self, RelConnBack) {
-        let (send_write, recv_write) = async_channel::bounded(1);
-        let (send_read, recv_read) = async_channel::bounded(1000);
+        let (send_write, recv_write) = async_channel::bounded(1000);
+        let (send_read, recv_read) = async_channel::bounded(10000);
         let (send_wire_read, recv_wire_read) = async_channel::bounded(1000);
         runtime::spawn(relconn_actor(
             state,
@@ -103,14 +105,16 @@ async fn relconn_actor(
     // match on our current state repeatedly
     #[derive(Debug, Clone)]
     enum Evt {
-        Rto(Seqno),
+        Rto((Seqno, bool)),
         AckTimer,
         NewWrite(Bytes),
         NewPkt(Message),
     }
 
     let transmit = |msg| async {
-        drop(send_wire_write.send(msg).await);
+        if send_wire_write.try_send(msg).is_err() {
+            log::warn!("SEND WIRE OVERFLO!")
+        }
     };
     let mut fragments: VecDeque<Bytes> = VecDeque::new();
     loop {
@@ -181,8 +185,10 @@ async fn relconn_actor(
                 mut conn_vars,
             } => {
                 let event = {
-                    let writeable = conn_vars.inflight.len() <= conn_vars.cwnd as usize;
-                    let force_ack = conn_vars.ack_seqnos.len() >= 64;
+                    let writeable = conn_vars.inflight.len() <= conn_vars.cwnd as usize
+                        && conn_vars.inflight.len() < 10000;
+                    let force_ack = conn_vars.ack_seqnos.len() >= 32;
+
                     let ack_timer = conn_vars.delayed_ack_timer;
                     let ack_timer = async {
                         if force_ack {
@@ -215,20 +221,24 @@ async fn relconn_actor(
                     let new_pkt = async {
                         Ok::<Evt, anyhow::Error>(Evt::NewPkt(recv_wire_read.recv().await?))
                     };
-                    ack_timer.or(rto_timeout).or(new_write).or(new_pkt).await
+                    ack_timer.or(rto_timeout.or(new_write.or(new_pkt))).await
                 };
                 match event {
-                    Ok(Evt::Rto(seqno)) => {
-                        // retransmit first unacknowledged packet
+                    Ok(Evt::Rto((seqno, is_timeout))) => {
+                        // retransmit packet
                         // assert!(!conn_vars.inflight.len() == 0);
                         if conn_vars.inflight.len() > 0 {
                             if let Some(v) = conn_vars.inflight.get_seqno(seqno) {
+                                let payload = v.payload.clone();
                                 if v.retrans == 1 {
-                                    conn_vars.congestion_rto();
+                                    if is_timeout {
+                                        conn_vars.congestion_rto();
+                                    } else {
+                                        conn_vars.congestion_fast();
+                                    }
                                 }
+                                transmit(payload).await;
                             }
-                            transmit(conn_vars.inflight.get_seqno(seqno).unwrap().payload.clone())
-                                .await;
                         }
                         // new state
                         SteadyState {
@@ -251,7 +261,7 @@ async fn relconn_actor(
                     })) => {
                         log::trace!("new ACK pkt with {} seqnos", payload.len() / 2);
                         for seqno in
-                            bincode::deserialize::<Vec<Seqno>>(&payload).unwrap_or_default()
+                            bincode::deserialize::<BTreeSet<Seqno>>(&payload).unwrap_or_default()
                         {
                             if conn_vars.inflight.mark_acked(seqno) {
                                 conn_vars.congestion_ack();
@@ -269,32 +279,14 @@ async fn relconn_actor(
                         stream_id,
                     })) => {
                         log::trace!("new data pkt with seqno={}", seqno);
-                        conn_vars.ack_seqnos.push(seqno);
+                        conn_vars.ack_seqnos.insert(seqno);
                         if conn_vars.delayed_ack_timer.is_none() {
                             conn_vars.delayed_ack_timer =
-                                Instant::now().checked_add(Duration::from_millis(10));
+                                Instant::now().checked_add(Duration::from_millis(5));
                         }
                         conn_vars.reorderer.insert(seqno, payload);
-                        let times = conn_vars.reorderer.take(&send_read);
+                        let times = conn_vars.reorderer.take(&send_read).await;
                         conn_vars.lowest_unseen += times;
-
-                        // process dupack
-                        // if conn_vars.dupack_seqno == ack_seqno {
-                        //     conn_vars.dupack_count += 1;
-                        //     if conn_vars.dupack_count >= DUPACK_THRESHOLD
-                        //         && !conn_vars.inflight.len() == 0
-                        //     {
-                        //         log::trace!("fast retransmit {}", ack_seqno);
-                        //         conn_vars.dupack_count = 0;
-                        //         conn_vars.congestion_fast();
-                        //         for (_, pkt) in conn_vars.inflight.iter().take(1) {
-                        //             transmit(pkt.clone()).await;
-                        //         }
-                        //     }
-                        // } else {
-                        //     conn_vars.dupack_count = 0;
-                        //     conn_vars.dupack_seqno = ack_seqno;
-                        // }
                         SteadyState {
                             stream_id,
                             conn_vars,
@@ -321,6 +313,7 @@ async fn relconn_actor(
                         }
                     }
                     Ok(Evt::AckTimer) => {
+                        // eprintln!("acking {} seqnos", conn_vars.ack_seqnos.len());
                         let encoded_acks = bincode::serialize(&conn_vars.ack_seqnos).unwrap();
                         transmit(Message::Rel {
                             kind: RelKind::DataAck,
@@ -397,12 +390,13 @@ pub(crate) struct ConnVars {
     next_free_seqno: Seqno,
 
     delayed_ack_timer: Option<Instant>,
-    ack_seqnos: Vec<Seqno>,
+    ack_seqnos: BTreeSet<Seqno>,
 
     reorderer: Reorderer<Bytes>,
     lowest_unseen: Seqno,
     // read_buffer: VecDeque<Bytes>,
     slow_start: bool,
+    ssthresh: f64,
     cwnd: f64,
     cwnd_max: f64,
     last_loss: Instant,
@@ -418,12 +412,13 @@ impl Default for ConnVars {
             next_free_seqno: 0,
 
             delayed_ack_timer: None,
-            ack_seqnos: Vec::new(),
+            ack_seqnos: BTreeSet::new(),
 
             reorderer: Reorderer::default(),
             lowest_unseen: 0,
 
             slow_start: true,
+            ssthresh: 1000.0,
             cwnd: 16.0,
             cwnd_max: 100.0,
             last_loss: Instant::now(),
@@ -437,31 +432,53 @@ impl ConnVars {
     fn congestion_ack(&mut self) {
         if self.slow_start {
             self.cwnd += 1.0;
-            if self.cwnd > 5000.0 {
+            if self.cwnd > self.ssthresh {
                 self.slow_start = false;
+                self.cwnd_max = self.cwnd;
+                let now = Instant::now();
+                self.last_loss = now;
+                self.cubic_secs = 0.0;
+                self.cubic_update(now);
             }
         } else {
             self.cubic_update(Instant::now());
+            // self.cwnd = (self.cwnd + 4.0 / self.cwnd).min(10000.0);
         }
         // eprintln!("ACK CWND => {}", self.cwnd);
     }
 
-    fn congestion_rto(&mut self) {
-        self.slow_start = false;
+    fn congestion_fast(&mut self) {
         if Instant::now().saturating_duration_since(self.last_loss) > self.inflight.rto() * 2 {
+            // self.cwnd = self.inflight.bdp().max(self.cwnd * 0.5);
+            // self.last_loss = Instant::now();
             self.cwnd_max = self.cwnd;
             let now = Instant::now();
             self.last_loss = now;
-            self.last_cubic = now;
             self.cubic_secs = 0.0;
-            let old_cwnd = self.cwnd;
             self.cubic_update(now);
-            // eprintln!(
-            //     "LOSS CWND => {} ratio {} rto {}ms",
-            //     self.cwnd,
-            //     self.cwnd / old_cwnd,
-            //     self.inflight.rto().as_millis()
-            // );
+            eprintln!("FAST CWND => {}", self.cwnd);
+        }
+    }
+
+    fn congestion_rto(&mut self) {
+        if Instant::now().saturating_duration_since(self.last_loss) > self.inflight.rto() * 2 {
+            let now = Instant::now();
+            self.last_loss = now;
+            // self.slow_start = false;
+            // self.cwnd_max = self.cwnd;
+            // self.last_cubic = now;
+            // self.cubic_secs = 0.0;
+            // self.cubic_update(now);
+            self.ssthresh = self.cwnd * 0.8;
+            self.cwnd = 1.0;
+            self.slow_start = true;
+            eprintln!(
+                "RTO CWND => {} (ssthresh {}) bdp {} rto {}ms",
+                self.cwnd,
+                self.ssthresh,
+                self.inflight.bdp(),
+                self.inflight.rto().as_millis()
+            );
         }
     }
 
