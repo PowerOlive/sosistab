@@ -49,8 +49,19 @@ impl Inflight {
         self.rtt.rto()
     }
 
+    pub fn mark_acked_lt(&mut self, seqno: Seqno) {
+        for segseq in self.segments.iter().map(|v| v.seqno).collect::<Vec<_>>() {
+            if segseq < seqno {
+                self.mark_acked(segseq);
+            } else {
+                break;
+            }
+        }
+    }
+
     pub fn mark_acked(&mut self, seqno: Seqno) -> bool {
         let mut toret = false;
+        let now = Instant::now();
         // mark the right one
         if let Some(entry) = self.segments.front() {
             let first_seqno = entry.seqno;
@@ -61,26 +72,25 @@ impl Inflight {
                         seg.acked = true;
                         self.inflight_count -= 1;
                         if seg.retrans == 0 {
-                            self.rtt.record_sample(
-                                Instant::now().saturating_duration_since(seg.send_time),
-                            );
+                            self.rtt
+                                .record_sample(now.saturating_duration_since(seg.send_time));
                         }
                         // time-based fast retransmit
-                        let fast_retrans_thresh = self.rtt.srtt / 2;
-                        let seg = seg.clone();
-                        for cand in self.segments.iter_mut() {
-                            if !cand.acked
-                                && cand.retrans == 0
-                                && seg
-                                    .send_time
-                                    .saturating_duration_since(cand.send_time)
-                                    .as_millis() as u64
-                                    > fast_retrans_thresh
-                            {
-                                self.fast_retrans.insert(cand.seqno);
-                                cand.retrans += 1;
-                            }
-                        }
+                        // let fast_retrans_thresh = self.rtt.srtt / 2;
+                        // let seg = seg.clone();
+                        // for cand in self.segments.iter_mut() {
+                        //     if !cand.acked
+                        //         && cand.retrans == 0
+                        //         && seg
+                        //             .send_time
+                        //             .saturating_duration_since(cand.send_time)
+                        //             .as_millis() as u64
+                        //             > fast_retrans_thresh
+                        //     {
+                        //         self.fast_retrans.insert(cand.seqno);
+                        //         cand.retrans += 1;
+                        //     }
+                        // }
                     }
                 }
                 // shrink if possible

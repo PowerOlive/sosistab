@@ -263,6 +263,7 @@ async fn relconn_actor(
                     Ok(Evt::NewPkt(Message::Rel {
                         kind: RelKind::DataAck,
                         payload,
+                        seqno,
                         ..
                     })) => {
                         log::trace!("new ACK pkt with {} seqnos", payload.len() / 2);
@@ -273,6 +274,7 @@ async fn relconn_actor(
                                 conn_vars.congestion_ack();
                             }
                         }
+                        conn_vars.inflight.mark_acked_lt(seqno);
                         SteadyState {
                             stream_id,
                             conn_vars,
@@ -324,7 +326,7 @@ async fn relconn_actor(
                         transmit(Message::Rel {
                             kind: RelKind::DataAck,
                             stream_id,
-                            seqno: 0,
+                            seqno: conn_vars.lowest_unseen,
                             payload: Bytes::copy_from_slice(&encoded_acks),
                         })
                         .await;

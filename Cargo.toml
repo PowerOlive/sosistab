@@ -9,13 +9,14 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-debug = true
+lto = "thin"
+opt-level="z"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-smol="0.4"
+smol="1"
 socket2="0.3"
 async-rwlock="1"
 ed25519-dalek={version="1.0.0-pre.4", features=["serde"]}

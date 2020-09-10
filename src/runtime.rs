@@ -4,8 +4,8 @@ use smol::Executor;
 use std::sync::Arc;
 use std::thread;
 
-thread_local! {
-    static EXECUTOR: Arc<Executor> = {
+lazy_static! {
+    static ref EXECUTOR: Arc<Executor> = {
         let ex = Arc::new(Executor::new());
         for i in 1..=num_cpus::get() {
             let builder = thread::Builder::new().name(format!("sosistab-{}", i));
@@ -13,7 +13,7 @@ thread_local! {
                 let ex = ex.clone();
                 builder
                     .spawn(move || {
-                        smol::future::block_on(ex.run(smol::future::pending::<()>()));
+                        smol::block_on(ex.run(smol::future::pending::<()>()));
                     })
                     .unwrap();
             }
@@ -24,5 +24,5 @@ thread_local! {
 
 /// Spawns a future onto the sosistab worker.
 pub fn spawn<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> smol::Task<T> {
-    EXECUTOR.with(|ex| ex.spawn(future))
+    EXECUTOR.spawn(future)
 }
