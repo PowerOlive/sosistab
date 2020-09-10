@@ -48,7 +48,7 @@ impl<T: Clone> Reorderer<T> {
     pub fn insert(&mut self, seq: Seqno, item: T) -> bool {
         if seq >= self.min && seq <= self.min + 30000 {
             if self.pkts.insert(seq, item).is_some() {
-                eprintln!("spurious retransmission of {} received", seq);
+                log::warn!("spurious retransmission of {} received", seq);
             }
             true
         } else {
