@@ -9,7 +9,6 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-lto = "thin"
 opt-level="z"
 
 
@@ -29,6 +28,9 @@ rand={version="0.7", features=["small_rng"]}
 constant_time_eq="0.1"
 bincode="1.3"
 enum_variant_type="0.2"
+event-listener="2"
+parking_lot="0.11"
+slice-deque="0.3"
 async-channel="1.4"
 probability="0.17"
 log="0.4"
@@ -48,8 +50,6 @@ indexmap="1.5"
 governor="0.3"
 
 [dev-dependencies]
-chacha20poly1305={version="0.5", features=["reduced-round"]}
-aes-gcm="0.6"
 env_logger="0.7"
 hex="0.4"
 socksv5="0.2"

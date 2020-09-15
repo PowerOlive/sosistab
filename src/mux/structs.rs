@@ -1,7 +1,7 @@
 use async_channel::Sender;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A sequence number.
 pub type Seqno = u64;
@@ -31,14 +31,14 @@ pub enum RelKind {
 
 #[derive(Clone)]
 pub struct Reorderer<T: Clone> {
-    pkts: BTreeMap<Seqno, T>,
+    pkts: HashMap<Seqno, T>,
     min: Seqno,
 }
 
 impl<T: Clone> Default for Reorderer<T> {
     fn default() -> Self {
         Reorderer {
-            pkts: BTreeMap::new(),
+            pkts: HashMap::new(),
             min: 0,
         }
     }
@@ -56,21 +56,16 @@ impl<T: Clone> Reorderer<T> {
             false
         }
     }
-    pub async fn take(&mut self, output: &Sender<T>) -> u64 {
-        let mut times = 0;
+    pub fn take(&mut self) -> Vec<T> {
+        let mut output = Vec::new();
         for idx in self.min.. {
-            if let Some(item) = self.pkts.get(&idx) {
-                if output.send(item.clone()).await.is_ok() {
-                    self.pkts.remove(&idx);
-                } else {
-                    break;
-                }
+            if let Some(item) = self.pkts.remove(&idx) {
+                output.push(item.clone());
                 self.min = idx + 1;
-                times += 1;
             } else {
                 break;
             }
         }
-        times
+        output
     }
 }

@@ -29,14 +29,7 @@ impl FrameEncoder {
         let mut padded_pkts: Vec<BytesMut> = pkts.iter().map(|p| pre_encode(p, 1400)).collect();
         // then we get an encoder for this size
         let data_shards = pkts.len();
-        let parity_shards = self.repair_len(measured_loss, pkts.len()).max(1);
-        let encoder = self
-            .rs_encoders
-            .entry((data_shards, parity_shards))
-            .or_insert_with(|| {
-                ReedSolomon::new(data_shards, parity_shards)
-                    .expect("didn't successfully construct RS encoder")
-            });
+        let parity_shards = self.repair_len(measured_loss, pkts.len());
         // then we encode
         // prepare the space for in-place mutation
         let mut parity_shard_space = vec![[0u8; 1400]; parity_shards];
@@ -44,8 +37,17 @@ impl FrameEncoder {
         for r in parity_shard_space.iter_mut() {
             padded_pkts.push(r);
         }
-        // do the encoding
-        encoder.encode(&mut padded_pkts).expect("can't encode");
+        if parity_shards > 0 {
+            let encoder = self
+                .rs_encoders
+                .entry((data_shards, parity_shards))
+                .or_insert_with(|| {
+                    ReedSolomon::new(data_shards, parity_shards)
+                        .expect("didn't successfully construct RS encoder")
+                });
+            // do the encoding
+            encoder.encode(&mut padded_pkts).expect("can't encode");
+        }
         // return
         let mut toret = Vec::with_capacity(data_shards + parity_shards);
         toret.extend(
@@ -81,7 +83,6 @@ impl FrameEncoder {
 }
 
 /// A single-use FEC decoder.
-#[derive(Debug)]
 pub struct FrameDecoder {
     data_shards: usize,
     parity_shards: usize,
@@ -98,7 +99,7 @@ impl FrameDecoder {
             parity_shards,
             space: vec![[0u8; 1400]; data_shards + parity_shards],
             present: vec![false; data_shards + parity_shards],
-            rs_decoder: ReedSolomon::new(data_shards, parity_shards).unwrap(),
+            rs_decoder: ReedSolomon::new(data_shards, parity_shards.max(1)).unwrap(),
             done: false,
         }
     }
@@ -131,7 +132,7 @@ impl FrameDecoder {
             .ok()?;
         self.present[pkt_idx] = true;
         // if I'm a data shard, just return it
-        if pkt_idx < self.data_shards {
+        if pkt_idx < self.data_shards || self.parity_shards == 0 {
             return Some(vec![post_decode(Bytes::copy_from_slice(
                 &self.space[pkt_idx],
             ))?]);
@@ -178,17 +179,17 @@ fn post_decode(raw: Bytes) -> Option<Bytes> {
     Some(raw.slice(2..2 + body_len as usize))
 }
 
-#[cfg(test)]
-mod tests {
-    extern crate test;
-    use super::*;
+// #[cfg(test)]
+// mod tests {
+//     extern crate test;
+//     use super::*;
 
-    #[bench]
-    fn bench_frame_encoder(b: &mut test::Bencher) {
-        let lala = vec![Bytes::from([0u8; 1024].as_ref()); 10];
-        let mut encoder = FrameEncoder::new(1);
-        b.iter(|| {
-            encoder.encode(0, &lala);
-        })
-    }
-}
+//     #[bench]
+//     fn bench_frame_encoder(b: &mut test::Bencher) {
+//         let lala = vec![Bytes::from([0u8; 1024].as_ref()); 10];
+//         let mut encoder = FrameEncoder::new(1);
+//         b.iter(|| {
+//             encoder.encode(0, &lala);
+//         })
+//     }
+// }

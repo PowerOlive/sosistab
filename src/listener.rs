@@ -3,15 +3,16 @@ use crate::*;
 use async_channel::{Receiver, Sender};
 use async_dup::Arc;
 use async_lock::Lock;
-use async_net::{AsyncToSocketAddrs, UdpSocket};
+use async_net::AsyncToSocketAddrs;
 use bytes::Bytes;
 use indexmap::IndexMap;
 use msg::HandshakeFrame::*;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use smol::Async;
 use std::net::SocketAddr;
 use std::time::Duration;
+use std::{collections::HashMap, net::UdpSocket};
 
 pub struct Listener {
     accepted: Receiver<Session>,
@@ -29,7 +30,7 @@ impl Listener {
         long_sk: x25519_dalek::StaticSecret,
     ) -> Self {
         // let addr = async_net::resolve(addr).await;
-        let socket = UdpSocket::bind(addr).await.unwrap();
+        let socket = runtime::new_udp_socket_bind(addr).await.unwrap();
         let cookie = crypt::Cookie::new((&long_sk).into());
         let (send, recv) = async_channel::unbounded();
         let task = runtime::spawn(
@@ -50,7 +51,7 @@ impl Listener {
 type ShardedAddrs = IndexMap<u8, SocketAddr>;
 
 struct ListenerActor {
-    socket: UdpSocket,
+    socket: Arc<Async<UdpSocket>>,
     cookie: crypt::Cookie,
     long_sk: x25519_dalek::StaticSecret,
 }
@@ -95,7 +96,7 @@ impl ListenerActor {
                         // try feeding it into the session
                         if let Some(dframe) = sess_crypt.pad_decrypt::<msg::DataFrame>(buffer) {
                             log::trace!("{} associated with existing session", addr);
-                            drop(sess.try_send(dframe));
+                            drop(sess.send(dframe).await);
                             continue;
                         } else {
                             log::trace!("{} NOT associated with existing session", addr);
@@ -222,7 +223,7 @@ impl ListenerActor {
                                                 })
                                             };
                                             let mut session = Session::new(SessionConfig {
-                                                latency: Duration::from_millis(10),
+                                                latency: Duration::from_millis(3),
                                                 target_loss: 0.005,
                                                 send_frame: session_output_send,
                                                 recv_frame: session_input_recv,

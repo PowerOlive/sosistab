@@ -1,4 +1,3 @@
-#![feature(test)]
 mod client;
 mod crypt;
 mod fec;

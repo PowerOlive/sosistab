@@ -40,11 +40,11 @@ fn main() {
                     smol::Timer::after(Duration::from_secs(5)).await;
                     let stats = mplex.get_session().get_stats().await;
                     eprintln!(
-                        "STATS: total down {} packets; raw loss {:.3}%; processed loss {:.3}%; avg rx size {} B",
+                        "STATS: total down {} packets; raw loss {:.3}%; processed loss {:.3}%; overhead {:.3}%",
                         stats.down_total,
                         stats.down_loss * 100.0,
                         stats.down_recovered_loss * 100.0,
-                        stats.avg_run_len,
+                        stats.down_redundant*100.0,
                     );
                 }
             })
@@ -62,8 +62,8 @@ fn main() {
                 eprintln!("opened connection in {} ms", diff.as_millis());
                 drop(
                     smol::future::race(
-                        smol::io::copy(client.clone(), remote.to_async_writer()),
-                        smol::io::copy(remote.to_async_reader(), client),
+                        smol::io::copy(client.clone(), remote.clone()),
+                        smol::io::copy(remote, client),
                     )
                     .await,
                 );

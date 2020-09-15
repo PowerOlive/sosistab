@@ -76,21 +76,21 @@ impl Inflight {
                                 .record_sample(now.saturating_duration_since(seg.send_time));
                         }
                         // time-based fast retransmit
-                        // let fast_retrans_thresh = self.rtt.srtt / 2;
-                        // let seg = seg.clone();
-                        // for cand in self.segments.iter_mut() {
-                        //     if !cand.acked
-                        //         && cand.retrans == 0
-                        //         && seg
-                        //             .send_time
-                        //             .saturating_duration_since(cand.send_time)
-                        //             .as_millis() as u64
-                        //             > fast_retrans_thresh
-                        //     {
-                        //         self.fast_retrans.insert(cand.seqno);
-                        //         cand.retrans += 1;
-                        //     }
-                        // }
+                        let fast_retrans_thresh = self.rtt.srtt / 4;
+                        let seg = seg.clone();
+                        for cand in self.segments.iter_mut() {
+                            if !cand.acked
+                                && cand.retrans == 0
+                                && seg
+                                    .send_time
+                                    .saturating_duration_since(cand.send_time)
+                                    .as_millis() as u64
+                                    > fast_retrans_thresh
+                            {
+                                self.fast_retrans.insert(cand.seqno);
+                                cand.retrans += 1;
+                            }
+                        }
                     }
                 }
                 // shrink if possible

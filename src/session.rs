@@ -58,9 +58,10 @@ impl Session {
 
     /// Takes a Bytes to be sent and stuffs it into the session.
     pub async fn send_bytes(&self, to_send: Bytes) {
-        if self.send_tosend.try_send(to_send).is_err() {
-            log::warn!("overflowed send buffer at session!");
-        }
+        // if self.send_tosend.try_send(to_send).is_err() {
+        //     log::warn!("overflowed send buffer at session!");
+        // }
+        drop(self.send_tosend.send(to_send).await)
     }
 
     /// Waits until the next application input is decoded by the session.
@@ -81,7 +82,7 @@ pub struct SessionStats {
     pub down_total: u64,
     pub down_loss: f64,
     pub down_recovered_loss: f64,
-    pub avg_run_len: u64,
+    pub down_redundant: f64,
 }
 
 async fn session_loop(
@@ -177,7 +178,7 @@ async fn session_loop(
                 &new_frame.body,
             ) {
                 for item in output {
-                    let _ = send_input.try_send(item);
+                    let _ = send_input.send(item).await;
                 }
             }
         }
@@ -195,7 +196,8 @@ async fn session_loop(
                         .min(1.0),
                 down_recovered_loss: 1.0
                     - (decoder.correct_count as f64 / decoder.total_count as f64).min(1.0),
-                avg_run_len: 0,
+                down_redundant: decoder.total_parity_shards as f64
+                    / decoder.total_data_shards as f64,
             };
             infal(req.send(response)).await;
         }
@@ -243,6 +245,11 @@ impl RunDecoder {
                 .decoders
                 .entry(run_no)
                 .or_insert_with(|| FrameDecoder::new(data_shards as usize, parity_shards as usize));
+            if run_idx < data_shards {
+                self.total_data_shards += 1
+            } else {
+                self.total_parity_shards += 1
+            }
             if let Some(res) = decoder.decode(bts, run_idx as usize) {
                 Some(res)
             } else {

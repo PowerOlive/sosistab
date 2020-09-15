@@ -1,9 +1,9 @@
 use crate::*;
 use async_channel::{Receiver, Sender};
 use async_dup::Arc;
-use async_net::UdpSocket;
 use bytes::Bytes;
 use smol::prelude::*;
+use smol::Async;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ pub async fn connect(
     server_addr: SocketAddr,
     pubkey: x25519_dalek::PublicKey,
 ) -> std::io::Result<Session> {
-    let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let udp_socket = runtime::new_udp_socket().await?;
     let my_long_sk = x25519_dalek::StaticSecret::new(&mut rand::thread_rng());
     let my_eph_sk = x25519_dalek::StaticSecret::new(&mut rand::thread_rng());
     // do the handshake
@@ -80,14 +80,15 @@ pub async fn connect(
     unimplemented!()
 }
 
+const SHARDS: u8 = 4;
+const RESET_MILLIS: u128 = 1000;
+
 async fn init_session(
     cookie: crypt::Cookie,
     resume_token: Bytes,
     shared_sec: blake3::Hash,
     remote_addr: SocketAddr,
 ) -> std::io::Result<Session> {
-    const SHARDS: u8 = 6;
-
     let (send_frame_out, recv_frame_out) = async_channel::bounded::<msg::DataFrame>(1000);
     let (send_frame_in, recv_frame_in) = async_channel::bounded::<msg::DataFrame>(1000);
     let backhaul_tasks: Vec<_> = (0..SHARDS)
@@ -104,7 +105,7 @@ async fn init_session(
         })
         .collect();
     let mut session = Session::new(SessionConfig {
-        latency: std::time::Duration::from_millis(10),
+        latency: std::time::Duration::from_millis(3),
         target_loss: 0.005,
         send_frame: send_frame_out,
         recv_frame: recv_frame_in,
@@ -132,7 +133,7 @@ async fn client_backhaul_once(
 
     let mut last_resume = Instant::now();
     let mut refreshed = false;
-    let mut socket = UdpSocket::bind("0.0.0.0:0").await.ok()?;
+    let mut socket = runtime::new_udp_socket().await.ok()?;
     let mut old_socket_cleanup: Option<smol::Task<Option<()>>> = None;
 
     #[derive(Debug)]
@@ -168,7 +169,9 @@ async fn client_backhaul_once(
             }
             Some(Evt::Outgoing(bts)) => {
                 let now = Instant::now();
-                if now.saturating_duration_since(last_resume).as_millis() > 1500 || !refreshed {
+                if now.saturating_duration_since(last_resume).as_millis() > RESET_MILLIS
+                    || !refreshed
+                {
                     refreshed = true;
                     last_resume = Instant::now();
                     let g_encrypt = crypt::StdAEAD::new(&cookie.generate_c2s().next().unwrap());
@@ -194,7 +197,7 @@ async fn client_backhaul_once(
                             }
                         }));
                         socket = loop {
-                            match UdpSocket::bind("0.0.0.0:0").await {
+                            match runtime::new_udp_socket().await {
                                 Ok(sock) => break sock,
                                 Err(err) => {
                                     log::warn!("error rebinding: {}", err);
@@ -207,7 +210,7 @@ async fn client_backhaul_once(
                         "resending resume token {} to {} from {}...",
                         shard_id,
                         remote_addr,
-                        socket.local_addr().unwrap()
+                        socket.get_ref().local_addr().unwrap()
                     );
                     drop(
                         socket
