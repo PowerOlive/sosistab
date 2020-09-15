@@ -97,9 +97,6 @@ impl AsyncRead for BipeReader {
         loop {
             {
                 let boo = &mut self.queue.lock();
-                if boo.0 {
-                    return Poll::Ready(Err(broken_pipe()));
-                }
                 let queue = &mut boo.1;
                 if !queue.is_empty() {
                     let to_copy_len = queue.len().min(buf.len());
@@ -110,6 +107,9 @@ impl AsyncRead for BipeReader {
                     // }
                     self.signal.notify(usize::MAX);
                     return Poll::Ready(Ok(to_copy_len));
+                }
+                if boo.0 {
+                    return Poll::Ready(Err(broken_pipe()));
                 }
             }
             let listen_new_data = &mut self.listener;
