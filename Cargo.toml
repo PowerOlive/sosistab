@@ -9,7 +9,7 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-opt-level="z"
+opt-level=2
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -27,7 +27,6 @@ c2-chacha="0.2"
 rand={version="0.7", features=["small_rng"]}
 constant_time_eq="0.1"
 bincode="1.3"
-enum_variant_type="0.2"
 event-listener="2"
 parking_lot="0.11"
 slice-deque="0.3"
@@ -47,7 +46,6 @@ scopeguard="1"
 async-net="1"
 reed-solomon-erasure={version="2", features=["pure-rust"]}
 indexmap="1.5"
-governor="0.3"
 
 [dev-dependencies]
 env_logger="0.7"

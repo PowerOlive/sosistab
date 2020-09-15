@@ -20,7 +20,7 @@ fn main() {
         .unwrap();
         let session = sosistab::connect(
             smol::unblock(move || {
-                (&args.get(1).unwrap_or(&"13.124.250.25:23456".to_string()))
+                (&args.get(1).unwrap_or(&"172.105.240.170:23456".to_string()))
                     .to_socket_addrs()
                     .unwrap()
                     .next()

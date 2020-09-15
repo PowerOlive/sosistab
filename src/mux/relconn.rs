@@ -5,8 +5,6 @@ use async_dup::Mutex as DMutex;
 use bipe::{BipeReader, BipeWriter};
 use bytes::{Bytes, BytesMut};
 use mux::structs::{Message, RelKind, Reorderer, Seqno};
-use nonzero_ext::nonzero;
-use rand::Rng;
 use smol::prelude::*;
 use std::{
     collections::BTreeSet,
@@ -30,7 +28,7 @@ pub struct RelConn {
 
 impl RelConn {
     pub(crate) fn new(state: RelConnState, output: Sender<Message>) -> (Self, RelConnBack) {
-        let (send_write, recv_write) = bipe::bipe(65536);
+        let (send_write, recv_write) = bipe::bipe(1024 * 1024);
         let (send_read, recv_read) = bipe::bipe(10 * 1024 * 1024);
         let (send_wire_read, recv_wire_read) = async_channel::bounded(100);
         runtime::spawn(relconn_actor(
@@ -146,9 +144,6 @@ async fn relconn_actor(
     recv_wire_read: Receiver<Message>,
     send_wire_write: Sender<Message>,
 ) -> anyhow::Result<()> {
-    let limiter = governor::RateLimiter::direct(
-        governor::Quota::per_second(nonzero!(20000u32)).allow_burst(nonzero!(10u32)),
-    );
     // match on our current state repeatedly
     #[derive(Debug, Clone)]
     enum Evt {
@@ -186,7 +181,7 @@ async fn relconn_actor(
                 tries,
                 result,
             } => {
-                let wait_interval = 2u64.saturating_pow(tries as u32) / 2;
+                let wait_interval = 2u64.saturating_pow(tries as u32);
                 log::trace!("C={} SynSent, tried {} times", stream_id, tries);
                 if wait_interval > MAX_WAIT_SECS {
                     anyhow::bail!("timeout in SynSent");
@@ -406,7 +401,7 @@ async fn relconn_actor(
                 stream_id,
                 mut death,
             } => {
-                send_read.close().await;
+                send_read.close().await?;
                 log::trace!("C={} RESET", stream_id);
                 transmit(Message::Rel {
                     kind: RelKind::Rst,
@@ -524,13 +519,13 @@ impl ConnVars {
             // self.last_loss = now;
             // self.cubic_secs = 0.0;
             // self.cubic_update(now);
-            eprintln!(
-                "LOSS CWND => {} (ssthresh {}) bdp {} rto {}ms",
-                self.cwnd,
-                self.ssthresh,
-                self.inflight.bdp(),
-                self.inflight.rto().as_millis()
-            );
+            // eprintln!(
+            //     "LOSS CWND => {} (ssthresh {}) bdp {} rto {}ms",
+            //     self.cwnd,
+            //     self.ssthresh,
+            //     self.inflight.bdp(),
+            //     self.inflight.rto().as_millis()
+            // );
         }
     }
 
@@ -546,13 +541,13 @@ impl ConnVars {
             self.ssthresh = self.cwnd * 0.9;
             self.cwnd = 1.0;
             self.slow_start = true;
-            eprintln!(
-                "RTO CWND => {} (ssthresh {}) bdp {} rto {}ms",
-                self.cwnd,
-                self.ssthresh,
-                self.inflight.bdp(),
-                self.inflight.rto().as_millis()
-            );
+            // eprintln!(
+            //     "RTO CWND => {} (ssthresh {}) bdp {} rto {}ms",
+            //     self.cwnd,
+            //     self.ssthresh,
+            //     self.inflight.bdp(),
+            //     self.inflight.rto().as_millis()
+            // );
         }
     }
 

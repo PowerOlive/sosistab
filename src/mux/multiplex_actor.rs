@@ -38,11 +38,11 @@ pub async fn multiplex(
                     } => {
                         let mut conn_tab = conn_tab.write().await;
                         if conn_tab.get_stream(stream_id).is_some() {
-                            log::trace!("syn recv {} REJECT", stream_id);
+                            log::trace!("syn recv {} REACCEPT", stream_id);
                             session
                                 .send_bytes(
                                     bincode::serialize(&Message::Rel {
-                                        kind: RelKind::Rst,
+                                        kind: RelKind::SynAck,
                                         stream_id,
                                         seqno: 0,
                                         payload: Bytes::new(),
