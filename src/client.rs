@@ -25,7 +25,7 @@ pub async fn connect(
     for timeout_factor in (0u32..).map(|x| 2u64.pow(x)) {
         // send hello
         let init_hello = crypt::StdAEAD::new(&cookie.generate_c2s().next().unwrap())
-            .pad_encrypt(&init_hello, 1300);
+            .pad_encrypt(&init_hello, 1000);
         udp_socket.send_to(&init_hello, server_addr).await?;
         log::trace!("sent client hello");
         // wait for response
@@ -106,7 +106,7 @@ async fn init_session(
         .collect();
     let mut session = Session::new(SessionConfig {
         latency: std::time::Duration::from_millis(3),
-        target_loss: 0.005,
+        target_loss: 0.05,
         send_frame: send_frame_out,
         recv_frame: recv_frame_in,
     });
@@ -159,7 +159,7 @@ async fn client_backhaul_once(
         let up_crypter = up_crypter.clone();
         let up = async {
             let df = recv_frame_out.recv().await.ok()?;
-            let encrypted = up_crypter.pad_encrypt(df, 1300);
+            let encrypted = up_crypter.pad_encrypt(df, 1000);
             Some(Evt::Outgoing(encrypted))
         };
         match smol::future::race(down, up).await {
@@ -220,7 +220,7 @@ async fn client_backhaul_once(
                                         resume_token: resume_token.clone(),
                                         shard_id,
                                     },
-                                    1300,
+                                    1000,
                                 ),
                                 remote_addr,
                             )

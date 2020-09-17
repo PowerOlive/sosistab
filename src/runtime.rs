@@ -39,8 +39,8 @@ pub async fn new_udp_socket_bind(
     let socket = Socket::new(Domain::ipv4(), Type::dgram(), None).unwrap();
     drop(socket.set_only_v6(false));
     socket.bind(&addr.into())?;
-    socket.set_recv_buffer_size(100 * 1024).unwrap();
-    socket.set_send_buffer_size(100 * 1024).unwrap();
+    socket.set_recv_buffer_size(1000 * 1024).unwrap();
+    socket.set_send_buffer_size(1000 * 1024).unwrap();
     Ok(async_dup::Arc::new(
         Async::new(socket.into_udp_socket()).unwrap(),
     ))

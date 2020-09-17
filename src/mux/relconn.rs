@@ -17,7 +17,7 @@ use std::{
 mod bipe;
 mod inflight;
 
-const MSS: usize = 1024;
+const MSS: usize = 1300;
 const MAX_WAIT_SECS: u64 = 60;
 
 #[derive(Clone)]
@@ -48,35 +48,8 @@ impl RelConn {
         )
     }
 
-    // pub fn to_async_reader(&self) -> impl AsyncRead {
-    //     self.recv_read.clone()
-    // }
-
-    // pub fn to_async_writer(&self) -> impl AsyncWrite {
-    //     self.send_write.clone()
-    // }
-
-    // pub async fn send_raw_bytes(&self, bts: Bytes) -> std::io::Result<()> {
-    //     if !bts.is_empty() {
-    //         self.send_write
-    //             .lock()
-    //             .write(&bts)
-    //             .await
-    //             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn recv_raw_bytes(&self) -> std::io::Result<Bytes> {
-    //     let mut bts = BytesMut;
-    //     self.recv_read
-    //         .recv()
-    //         .await
-    //         .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))
-    // }
-
-    pub fn force_close(&mut self) {
-        drop(self.send_write.close())
+    pub async fn shutdown(&mut self) {
+        drop(self.send_write.close().await)
     }
 }
 
@@ -248,17 +221,13 @@ async fn relconn_actor(
                     let new_write = async {
                         if writeable {
                             if fragments.is_empty() {
-                                let mut to_write = {
-                                    let mut bts = BytesMut::with_capacity(1024);
-                                    bts.extend_from_slice(&[0; 1024]);
+                                let to_write = {
+                                    let mut bts = BytesMut::with_capacity(MSS);
+                                    bts.extend_from_slice(&[0; MSS]);
                                     let n = recv_write.read(&mut bts).await?;
                                     let bts = bts.freeze();
                                     bts.slice(0..n)
                                 };
-                                while to_write.len() > MSS {
-                                    fragments.push_back(to_write.slice(0..MSS));
-                                    to_write = to_write.slice(MSS..);
-                                }
                                 fragments.push_back(to_write);
                             }
                             // limiter.until_ready().await;
@@ -512,20 +481,20 @@ impl ConnVars {
     fn congestion_fast(&mut self) {
         if Instant::now().saturating_duration_since(self.last_loss) > self.inflight.rto() * 2 {
             self.slow_start = false;
-            self.cwnd = self.inflight.bdp().max(self.cwnd * 0.9);
+            self.cwnd = self.inflight.bdp().max(self.cwnd * 0.8);
             self.last_loss = Instant::now();
             // self.cwnd_max = self.cwnd;
             // let now = Instant::now();
             // self.last_loss = now;
             // self.cubic_secs = 0.0;
             // self.cubic_update(now);
-            // eprintln!(
-            //     "LOSS CWND => {} (ssthresh {}) bdp {} rto {}ms",
-            //     self.cwnd,
-            //     self.ssthresh,
-            //     self.inflight.bdp(),
-            //     self.inflight.rto().as_millis()
-            // );
+            eprintln!(
+                "LOSS CWND => {} (ssthresh {}) bdp {} rto {}ms",
+                self.cwnd,
+                self.ssthresh,
+                self.inflight.bdp(),
+                self.inflight.rto().as_millis()
+            );
         }
     }
 
@@ -538,16 +507,16 @@ impl ConnVars {
             // self.last_cubic = now;
             // self.cubic_secs = 0.0;
             // self.cubic_update(now);
-            self.ssthresh = self.cwnd * 0.9;
+            self.ssthresh = self.cwnd * 0.8;
             self.cwnd = 1.0;
             self.slow_start = true;
-            // eprintln!(
-            //     "RTO CWND => {} (ssthresh {}) bdp {} rto {}ms",
-            //     self.cwnd,
-            //     self.ssthresh,
-            //     self.inflight.bdp(),
-            //     self.inflight.rto().as_millis()
-            // );
+            eprintln!(
+                "RTO CWND => {} (ssthresh {}) bdp {} rto {}ms",
+                self.cwnd,
+                self.ssthresh,
+                self.inflight.bdp(),
+                self.inflight.rto().as_millis()
+            );
         }
     }
 

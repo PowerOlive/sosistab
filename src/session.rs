@@ -38,13 +38,13 @@ pub struct Session {
 impl Session {
     /// Creates a tuple of a Session and also a channel with which stuff is fed into the session.
     pub fn new(cfg: SessionConfig) -> Self {
-        let (s2, r2) = async_channel::bounded(1000);
-        let (s4, r4) = async_channel::bounded(1000);
+        let (send_tosend, recv_tosend) = async_channel::bounded(100);
+        let (send_input, recv_input) = async_channel::bounded(100);
         let (s, r) = async_channel::unbounded();
-        let task = runtime::spawn(session_loop(cfg, r2, s4, r));
+        let task = runtime::spawn(session_loop(cfg, recv_tosend, send_input, r));
         Session {
-            send_tosend: s2,
-            recv_input: r4,
+            send_tosend,
+            recv_input,
             get_stats: s,
             _dropper: Vec::new(),
             _task: task,

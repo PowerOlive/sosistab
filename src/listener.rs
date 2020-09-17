@@ -145,7 +145,7 @@ impl ListenerActor {
                                         resume_token: token,
                                     };
                                     let reply =
-                                        crypt::StdAEAD::new(&s2c_key).pad_encrypt(&reply, 1300);
+                                        crypt::StdAEAD::new(&s2c_key).pad_encrypt(&reply, 1000);
                                     socket.send_to(&reply, addr).await.ok()?;
                                     log::trace!("replied to ClientHello from {}", addr);
                                 }
@@ -190,7 +190,7 @@ impl ListenerActor {
                                                         match session_output_recv.recv().await {
                                                             Ok(df) => {
                                                                 let enc =
-                                                                    dn_aead.pad_encrypt(&df, 1300);
+                                                                    dn_aead.pad_encrypt(&df, 1000);
                                                                 let addrs =
                                                                     locked_addrs.lock().await;
                                                                 assert!(!addrs.is_empty());
@@ -224,7 +224,7 @@ impl ListenerActor {
                                             };
                                             let mut session = Session::new(SessionConfig {
                                                 latency: Duration::from_millis(3),
-                                                target_loss: 0.005,
+                                                target_loss: 0.05,
                                                 send_frame: session_output_send,
                                                 recv_frame: session_input_recv,
                                             });
