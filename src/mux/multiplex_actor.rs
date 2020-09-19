@@ -17,7 +17,8 @@ pub async fn multiplex(
 ) -> anyhow::Result<()> {
     let _exit = scopeguard::guard((), |_| log::warn!("multiplex context exited!"));
     let conn_tab = Arc::new(RwLock::new(ConnTable::default()));
-    let (glob_send, glob_recv) = async_channel::bounded(10000);
+    let (glob_send, glob_recv) = async_channel::bounded(100);
+    let (dead_send, dead_recv) = async_channel::unbounded();
     loop {
         // fires on receiving messages
         let recv_evt = async {
@@ -52,10 +53,14 @@ pub async fn multiplex(
                                 )
                                 .await;
                         } else {
+                            let dead_send = dead_send.clone();
                             log::trace!("syn recv {} ACCEPT", stream_id);
                             let (new_conn, new_conn_back) = RelConn::new(
                                 RelConnState::SynReceived { stream_id },
                                 glob_send.clone(),
+                                move || {
+                                    let _ = dead_send.try_send(stream_id);
+                                },
                             );
                             // the RelConn itself is responsible for sending the SynAck. Here we just store the connection into the table, accept it, and be done with it.
                             conn_tab.set_stream(stream_id, new_conn_back);
@@ -68,7 +73,7 @@ pub async fn multiplex(
                     } => {
                         if let Some(handle) = conn_tab.read().await.get_stream(stream_id) {
                             log::trace!("handing over {:?} to {}", kind, stream_id);
-                            handle.process(msg).await
+                            handle.process(msg)
                         } else {
                             log::trace!("discarding {:?} to nonexistent {}", kind, stream_id);
                             if kind != RelKind::Rst {
@@ -94,15 +99,6 @@ pub async fn multiplex(
         // fires on sending messages
         let send_evt = async {
             let to_send = glob_recv.recv().await?;
-            if let Message::Rel {
-                stream_id,
-                kind: RelKind::Rst,
-                ..
-            } = &to_send
-            {
-                log::trace!("RESET intercepted for {}, removing from table!", stream_id);
-                conn_tab.write().await.del_stream(*stream_id);
-            }
             session
                 .send_bytes(bincode::serialize(&to_send).unwrap().into())
                 .await;
@@ -120,6 +116,7 @@ pub async fn multiplex(
             let result_chan = conn_open_recv.recv().await?;
             let conn_tab = conn_tab.clone();
             let glob_send = glob_send.clone();
+            let dead_send = dead_send.clone();
             runtime::spawn(async move {
                 let stream_id = {
                     let mut conn_tab = conn_tab.write().await;
@@ -133,6 +130,9 @@ pub async fn multiplex(
                                 result: send_sig,
                             },
                             glob_send.clone(),
+                            move || {
+                                let _ = dead_send.try_send(stream_id);
+                            },
                         );
                         runtime::spawn(async move {
                             let _ = recv_sig.recv().await;
@@ -160,9 +160,16 @@ pub async fn multiplex(
             .await;
             Ok::<(), anyhow::Error>(())
         };
+        // dead stuff
+        let dead_evt = async {
+            let lala = dead_recv.recv().await?;
+            log::debug!("removing stream {} from table", lala);
+            conn_tab.write().await.del_stream(lala);
+            Ok(())
+        };
         // await on them all
         recv_evt
-            .or(send_evt.or(urel_send_evt.or(conn_open_evt)))
+            .or(send_evt.or(urel_send_evt.or(conn_open_evt.or(dead_evt))))
             .await?;
     }
 }

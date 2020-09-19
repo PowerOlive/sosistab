@@ -36,7 +36,15 @@ pub async fn new_udp_socket_bind(
     addr: impl AsyncToSocketAddrs,
 ) -> std::io::Result<async_dup::Arc<Async<UdpSocket>>> {
     let addr = async_net::resolve(addr).await?[0];
-    let socket = Socket::new(Domain::ipv4(), Type::dgram(), None).unwrap();
+    let socket = Socket::new(
+        match addr {
+            SocketAddr::V4(_) => Domain::ipv4(),
+            SocketAddr::V6(_) => Domain::ipv6(),
+        },
+        Type::dgram(),
+        None,
+    )
+    .unwrap();
     drop(socket.set_only_v6(false));
     socket.bind(&addr.into())?;
     socket.set_recv_buffer_size(1000 * 1024).unwrap();

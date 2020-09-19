@@ -3,7 +3,6 @@ use async_channel::{Receiver, Sender};
 use async_dup::Arc;
 use bytes::Bytes;
 use smol::prelude::*;
-use smol::Async;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -89,8 +88,8 @@ async fn init_session(
     shared_sec: blake3::Hash,
     remote_addr: SocketAddr,
 ) -> std::io::Result<Session> {
-    let (send_frame_out, recv_frame_out) = async_channel::bounded::<msg::DataFrame>(1000);
-    let (send_frame_in, recv_frame_in) = async_channel::bounded::<msg::DataFrame>(1000);
+    let (send_frame_out, recv_frame_out) = async_channel::bounded::<msg::DataFrame>(100);
+    let (send_frame_in, recv_frame_in) = async_channel::bounded::<msg::DataFrame>(100);
     let backhaul_tasks: Vec<_> = (0..SHARDS)
         .map(|i| {
             runtime::spawn(client_backhaul_once(
@@ -206,12 +205,12 @@ async fn client_backhaul_once(
                             }
                         };
                     }
-                    log::debug!(
-                        "resending resume token {} to {} from {}...",
-                        shard_id,
-                        remote_addr,
-                        socket.get_ref().local_addr().unwrap()
-                    );
+                    // log::debug!(
+                    //     "resending resume token {} to {} from {}...",
+                    //     shard_id,
+                    //     remote_addr,
+                    //     socket.get_ref().local_addr().unwrap()
+                    // );
                     drop(
                         socket
                             .send_to(

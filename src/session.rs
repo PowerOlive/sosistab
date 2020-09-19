@@ -38,7 +38,7 @@ pub struct Session {
 impl Session {
     /// Creates a tuple of a Session and also a channel with which stuff is fed into the session.
     pub fn new(cfg: SessionConfig) -> Self {
-        let (send_tosend, recv_tosend) = async_channel::bounded(100);
+        let (send_tosend, recv_tosend) = async_channel::bounded(1000);
         let (send_input, recv_input) = async_channel::bounded(100);
         let (s, r) = async_channel::unbounded();
         let task = runtime::spawn(session_loop(cfg, recv_tosend, send_input, r));
@@ -58,10 +58,10 @@ impl Session {
 
     /// Takes a Bytes to be sent and stuffs it into the session.
     pub async fn send_bytes(&self, to_send: Bytes) {
-        // if self.send_tosend.try_send(to_send).is_err() {
-        //     log::warn!("overflowed send buffer at session!");
-        // }
-        drop(self.send_tosend.send(to_send).await)
+        if self.send_tosend.try_send(to_send).is_err() {
+            log::warn!("overflowed send buffer at session!");
+        }
+        // drop(self.send_tosend.send(to_send).await)
     }
 
     /// Waits until the next application input is decoded by the session.
@@ -147,6 +147,7 @@ async fn session_loop(
                         })
                         .await,
                 );
+                // lim.until_ready().await;
                 frame_no += 1;
             }
             run_no += 1;
@@ -336,7 +337,7 @@ impl LossCalculator {
             let median = {
                 let mut lala: Vec<f64> = self.loss_samples.iter().cloned().collect();
                 lala.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-                lala[lala.len() / 2]
+                lala[lala.len() / 4]
             };
             self.median = median
         }

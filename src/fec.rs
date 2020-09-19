@@ -1,6 +1,6 @@
 use bytes::{Bytes, BytesMut};
 use probability::distribution::Distribution;
-use reed_solomon_erasure::ReedSolomon;
+use reed_solomon_erasure::galois_8;
 use std::collections::HashMap;
 /// A forward error correction encoder. Retains internal state for memoization, memory pooling etc.
 #[derive(Debug)]
@@ -10,7 +10,7 @@ pub struct FrameEncoder {
     // target loss rate
     target_loss: u8,
     // encoder pool
-    rs_encoders: HashMap<(usize, usize), ReedSolomon>,
+    rs_encoders: HashMap<(usize, usize), galois_8::ReedSolomon>,
 }
 
 impl FrameEncoder {
@@ -42,7 +42,7 @@ impl FrameEncoder {
                 .rs_encoders
                 .entry((data_shards, parity_shards))
                 .or_insert_with(|| {
-                    ReedSolomon::new(data_shards, parity_shards)
+                    galois_8::ReedSolomon::new(data_shards, parity_shards)
                         .expect("didn't successfully construct RS encoder")
                 });
             // do the encoding
@@ -88,7 +88,7 @@ pub struct FrameDecoder {
     parity_shards: usize,
     space: Vec<([u8; 1400])>,
     present: Vec<bool>,
-    rs_decoder: ReedSolomon,
+    rs_decoder: galois_8::ReedSolomon,
     done: bool,
 }
 
@@ -99,7 +99,7 @@ impl FrameDecoder {
             parity_shards,
             space: vec![[0u8; 1400]; data_shards + parity_shards],
             present: vec![false; data_shards + parity_shards],
-            rs_decoder: ReedSolomon::new(data_shards, parity_shards.max(1)).unwrap(),
+            rs_decoder: galois_8::ReedSolomon::new(data_shards, parity_shards.max(1)).unwrap(),
             done: false,
         }
     }
@@ -137,11 +137,14 @@ impl FrameDecoder {
                 &self.space[pkt_idx],
             ))?]);
         }
-        let mut ref_vec: Vec<&mut [u8]> = self.space.iter_mut().map(|v| v.as_mut()).collect();
+        let mut ref_vec: Vec<(&mut [u8], bool)> = self
+            .space
+            .iter_mut()
+            .zip(self.present.iter())
+            .map(|(v, pres)| (v.as_mut(), *pres))
+            .collect();
         // otherwise, attempt to reconstruct
-        self.rs_decoder
-            .reconstruct(&mut ref_vec, &self.present)
-            .ok()?;
+        self.rs_decoder.reconstruct(&mut ref_vec).ok()?;
         self.done = true;
         Some(
             self.space

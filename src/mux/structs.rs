@@ -1,7 +1,6 @@
-use async_channel::Sender;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 /// A sequence number.
 pub type Seqno = u64;

@@ -1,5 +1,4 @@
 use crate::mux::structs::*;
-use rand::prelude::*;
 use std::{
     cmp::Reverse,
     collections::BTreeSet,
@@ -69,6 +68,7 @@ impl Inflight {
                 let offset = (seqno - first_seqno) as usize;
                 if let Some(seg) = self.segments.get_mut(offset) {
                     if !seg.acked {
+                        toret = true;
                         seg.acked = true;
                         self.inflight_count -= 1;
                         if seg.retrans == 0 {
@@ -76,27 +76,34 @@ impl Inflight {
                                 .record_sample(now.saturating_duration_since(seg.send_time));
                         }
                         // time-based fast retransmit
-                        let fast_retrans_thresh = self.rtt.srtt / 4;
-                        let seg = seg.clone();
-                        for cand in self.segments.iter_mut() {
-                            if !cand.acked
-                                && cand.retrans == 0
-                                && seg
-                                    .send_time
-                                    .saturating_duration_since(cand.send_time)
-                                    .as_millis() as u64
-                                    > fast_retrans_thresh
-                            {
-                                self.fast_retrans.insert(cand.seqno);
-                                cand.retrans += 1;
-                            }
-                        }
+                        // let fast_retrans_thresh = self.rtt.srtt / 4;
+                        // let seg = seg.clone();
+                        // for cand in self.segments.iter_mut() {
+                        //     if !cand.acked
+                        //         && cand.retrans == 0
+                        //         && seg
+                        //             .send_time
+                        //             .saturating_duration_since(cand.send_time)
+                        //             .as_millis() as u64
+                        //             > fast_retrans_thresh
+                        //     {
+                        //         self.fast_retrans.insert(cand.seqno);
+                        //         cand.retrans += 1;
+                        //     }
+                        // }
+                        // packet-based fast retransmit
+                        // for cand in self.segments.iter_mut() {
+                        //     if !cand.acked && cand.retrans == 0 && seqno >= cand.seqno + 3 {
+                        //         self.fast_retrans.insert(cand.seqno);
+                        //         cand.retrans += 1;
+                        //         self.times.push(cand.seqno, Reverse(Instant::now() + rto));
+                        //     }
+                        // }
                     }
                 }
                 // shrink if possible
                 while self.len() > 0 && self.segments.front().unwrap().acked {
                     self.segments.pop_front();
-                    toret = true;
                 }
             }
         }

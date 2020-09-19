@@ -4,6 +4,7 @@ use async_dup::Arc as DArc;
 use async_dup::Mutex as DMutex;
 use bipe::{BipeReader, BipeWriter};
 use bytes::{Bytes, BytesMut};
+// use governor::{Quota, RateLimiter};
 use mux::structs::{Message, RelKind, Reorderer, Seqno};
 use smol::prelude::*;
 use std::{
@@ -17,7 +18,7 @@ use std::{
 mod bipe;
 mod inflight;
 
-const MSS: usize = 1300;
+const MSS: usize = 1100;
 const MAX_WAIT_SECS: u64 = 60;
 
 #[derive(Clone)]
@@ -27,16 +28,21 @@ pub struct RelConn {
 }
 
 impl RelConn {
-    pub(crate) fn new(state: RelConnState, output: Sender<Message>) -> (Self, RelConnBack) {
-        let (send_write, recv_write) = bipe::bipe(1024 * 1024);
-        let (send_read, recv_read) = bipe::bipe(10 * 1024 * 1024);
-        let (send_wire_read, recv_wire_read) = async_channel::bounded(100);
+    pub(crate) fn new(
+        state: RelConnState,
+        output: Sender<Message>,
+        dropper: impl FnOnce() + Send + 'static,
+    ) -> (Self, RelConnBack) {
+        let (send_write, recv_write) = bipe::bipe(65536);
+        let (send_read, recv_read) = bipe::bipe(128 * 1024);
+        let (send_wire_read, recv_wire_read) = async_channel::bounded(1000);
         runtime::spawn(relconn_actor(
             state,
             recv_write,
             send_read,
             recv_wire_read,
             output,
+            dropper,
         ))
         .detach();
         (
@@ -116,7 +122,9 @@ async fn relconn_actor(
     mut send_read: BipeWriter,
     recv_wire_read: Receiver<Message>,
     send_wire_write: Sender<Message>,
+    dropper: impl FnOnce(),
 ) -> anyhow::Result<()> {
+    let _guard = scopeguard::guard((), |_| dropper());
     // match on our current state repeatedly
     #[derive(Debug, Clone)]
     enum Evt {
@@ -124,12 +132,11 @@ async fn relconn_actor(
         AckTimer,
         NewWrite(Bytes),
         NewPkt(Message),
+        Closing,
     }
 
     let transmit = |msg| async {
-        if send_wire_write.try_send(msg).is_err() {
-            eprintln!("SEND WIRE OVERFLO!")
-        }
+        drop(send_wire_write.send(msg).await);
     };
     let mut fragments: VecDeque<Bytes> = VecDeque::new();
     loop {
@@ -201,7 +208,8 @@ async fn relconn_actor(
             } => {
                 let event = {
                     let writeable = conn_vars.inflight.inflight() <= conn_vars.cwnd as usize
-                        && conn_vars.inflight.len() < 10000;
+                        && conn_vars.inflight.len() < 10000
+                        && !conn_vars.closing;
                     let force_ack = conn_vars.ack_seqnos.len() >= 128;
 
                     let ack_timer = conn_vars.delayed_ack_timer;
@@ -224,14 +232,25 @@ async fn relconn_actor(
                                 let to_write = {
                                     let mut bts = BytesMut::with_capacity(MSS);
                                     bts.extend_from_slice(&[0; MSS]);
-                                    let n = recv_write.read(&mut bts).await?;
-                                    let bts = bts.freeze();
-                                    bts.slice(0..n)
+                                    let n = recv_write.read(&mut bts).await;
+                                    if let Ok(n) = n {
+                                        let bts = bts.freeze();
+                                        Some(bts.slice(0..n))
+                                    } else {
+                                        None
+                                    }
                                 };
-                                fragments.push_back(to_write);
+                                if let Some(to_write) = to_write {
+                                    fragments.push_back(to_write);
+                                    Ok(Evt::NewWrite(fragments.pop_front().unwrap()))
+                                } else {
+                                    Ok(Evt::Closing)
+                                }
+                            } else {
+                                Ok::<Evt, anyhow::Error>(Evt::NewWrite(
+                                    fragments.pop_front().unwrap(),
+                                ))
                             }
-                            // limiter.until_ready().await;
-                            Ok::<Evt, anyhow::Error>(Evt::NewWrite(fragments.pop_front().unwrap()))
                         } else {
                             Ok(smol::future::pending().await)
                         }
@@ -242,18 +261,40 @@ async fn relconn_actor(
                     ack_timer.or(rto_timeout.or(new_write.or(new_pkt))).await
                 };
                 match event {
-                    Ok(Evt::Rto((seqno, is_timeout))) => {
+                    Ok(Evt::Closing) => {
+                        conn_vars.closing = true;
+                        if conn_vars.inflight.len() > 0 {
+                            SteadyState {
+                                stream_id,
+                                conn_vars,
+                            }
+                        } else {
+                            Reset {
+                                stream_id,
+                                death: smol::Timer::after(Duration::from_secs(MAX_WAIT_SECS)),
+                            }
+                        }
+                    }
+                    Ok(Evt::Rto((seqno, _is_timeout))) => {
                         // retransmit packet
                         // assert!(!conn_vars.inflight.len() == 0);
                         if conn_vars.inflight.len() > 0 {
                             if let Some(v) = conn_vars.inflight.get_seqno(seqno) {
                                 let payload = v.payload.clone();
-                                if v.retrans == 1 {
-                                    if is_timeout {
-                                        conn_vars.congestion_rto()
-                                    } else {
-                                        conn_vars.congestion_fast();
-                                    }
+                                let retrans = v.retrans;
+                                // eprintln!(
+                                //     "retrans {} {} for the {} time",
+                                //     seqno, is_timeout, v.retrans
+                                // );
+                                if retrans == 1 {
+                                    // if is_timeout {
+                                    //     conn_vars.congestion_rto()
+                                    // } else {
+                                    conn_vars.congestion_loss();
+                                    // }
+                                }
+                                if retrans > 8 {
+                                    anyhow::bail!("full timeout")
                                 }
                                 conn_vars.retrans_count += 1;
                                 // eprintln!(
@@ -275,7 +316,7 @@ async fn relconn_actor(
                         ..
                     })) => Reset {
                         stream_id,
-                        death: smol::Timer::after(Duration::from_secs(60)),
+                        death: smol::Timer::after(Duration::from_secs(MAX_WAIT_SECS)),
                     },
                     Ok(Evt::NewPkt(Message::Rel {
                         kind: RelKind::DataAck,
@@ -292,9 +333,16 @@ async fn relconn_actor(
                             }
                         }
                         conn_vars.inflight.mark_acked_lt(seqno);
-                        SteadyState {
-                            stream_id,
-                            conn_vars,
+                        if conn_vars.inflight.len() == 0 && conn_vars.closing {
+                            Reset {
+                                stream_id,
+                                death: smol::Timer::after(Duration::from_secs(MAX_WAIT_SECS)),
+                            }
+                        } else {
+                            SteadyState {
+                                stream_id,
+                                conn_vars,
+                            }
                         }
                     }
                     Ok(Evt::NewPkt(Message::Rel {
@@ -307,17 +355,25 @@ async fn relconn_actor(
                         conn_vars.ack_seqnos.insert(seqno);
                         if conn_vars.delayed_ack_timer.is_none() {
                             conn_vars.delayed_ack_timer =
-                                Instant::now().checked_add(Duration::from_millis(5));
+                                Instant::now().checked_add(Duration::from_millis(3));
                         }
                         conn_vars.reorderer.insert(seqno, payload);
                         let times = conn_vars.reorderer.take();
                         conn_vars.lowest_unseen += times.len() as u64;
+                        let mut success = true;
                         for pkt in times {
-                            send_read.write(&pkt).await?;
+                            success |= send_read.write(&pkt).await.is_ok();
                         }
-                        SteadyState {
-                            stream_id,
-                            conn_vars,
+                        if success {
+                            SteadyState {
+                                stream_id,
+                                conn_vars,
+                            }
+                        } else {
+                            Reset {
+                                stream_id,
+                                death: smol::Timer::after(Duration::from_secs(MAX_WAIT_SECS)),
+                            }
                         }
                     }
                     Ok(Evt::NewWrite(bts)) => {
@@ -370,7 +426,7 @@ async fn relconn_actor(
                 stream_id,
                 mut death,
             } => {
-                send_read.close().await?;
+                drop(send_read.close().await);
                 log::trace!("C={} RESET", stream_id);
                 transmit(Message::Rel {
                     kind: RelKind::Rst,
@@ -386,7 +442,7 @@ async fn relconn_actor(
                     },
                     async {
                         if recv_wire_read.recv().await.is_ok() {
-                            true
+                            false
                         } else {
                             smol::future::pending().await
                         }
@@ -407,8 +463,8 @@ pub(crate) struct RelConnBack {
 }
 
 impl RelConnBack {
-    pub async fn process(&self, input: Message) {
-        drop(self.send_wire_read.send(input).await)
+    pub fn process(&self, input: Message) {
+        drop(self.send_wire_read.try_send(input))
     }
 }
 
@@ -426,11 +482,12 @@ pub(crate) struct ConnVars {
     slow_start: bool,
     ssthresh: f64,
     cwnd: f64,
-    cwnd_max: f64,
     last_loss: Instant,
 
-    cubic_secs: f64,
-    last_cubic: Instant,
+    loss_count: usize,
+    loss_count_start: Instant,
+
+    closing: bool,
 }
 
 impl Default for ConnVars {
@@ -449,10 +506,12 @@ impl Default for ConnVars {
             slow_start: true,
             ssthresh: 10000.0,
             cwnd: 16.0,
-            cwnd_max: 100.0,
             last_loss: Instant::now(),
-            cubic_secs: 0.0,
-            last_cubic: Instant::now(),
+
+            loss_count: 0,
+            loss_count_start: Instant::now(),
+
+            closing: false,
         }
     }
 }
@@ -463,32 +522,27 @@ impl ConnVars {
             self.cwnd += 1.0;
             if self.cwnd > self.ssthresh {
                 self.slow_start = false;
-                // self.cwnd_max = self.cwnd / 0.8;
-                // let now = Instant::now();
-                // self.last_loss = now;
-                // self.cubic_secs = 0.0;
-                // self.cubic_update(now);
             }
         } else {
-            // self.cubic_update(Instant::now());
-            let n = (0.23 * self.cwnd.powf(0.4)).max(1.0) * 4.0;
-            // dbg!(n);
+            let n = (0.23 * self.cwnd.powf(0.4)).max(1.0);
             self.cwnd = (self.cwnd + n / self.cwnd).min(10000.0);
         }
-        // eprintln!("ACK CWND => {}", self.cwnd);
+        log::trace!("ACK CWND => {}", self.cwnd);
     }
 
-    fn congestion_fast(&mut self) {
-        if Instant::now().saturating_duration_since(self.last_loss) > self.inflight.rto() * 2 {
+    fn congestion_loss(&mut self) {
+        let now = Instant::now();
+        if now.saturating_duration_since(self.loss_count_start) < self.inflight.rto() {
+            self.loss_count += 1;
+        } else {
+            self.loss_count = 0;
+            self.loss_count_start = Instant::now()
+        }
+        if now.saturating_duration_since(self.last_loss) > self.inflight.rto() {
             self.slow_start = false;
             self.cwnd = self.inflight.bdp().max(self.cwnd * 0.8);
-            self.last_loss = Instant::now();
-            // self.cwnd_max = self.cwnd;
-            // let now = Instant::now();
-            // self.last_loss = now;
-            // self.cubic_secs = 0.0;
-            // self.cubic_update(now);
-            eprintln!(
+            self.last_loss = now;
+            log::trace!(
                 "LOSS CWND => {} (ssthresh {}) bdp {} rto {}ms",
                 self.cwnd,
                 self.ssthresh,
@@ -496,42 +550,5 @@ impl ConnVars {
                 self.inflight.rto().as_millis()
             );
         }
-    }
-
-    fn congestion_rto(&mut self) {
-        if Instant::now().saturating_duration_since(self.last_loss) > self.inflight.rto() * 2 {
-            let now = Instant::now();
-            self.last_loss = now;
-            // self.slow_start = false;
-            // self.cwnd_max = self.cwnd;
-            // self.last_cubic = now;
-            // self.cubic_secs = 0.0;
-            // self.cubic_update(now);
-            self.ssthresh = self.cwnd * 0.8;
-            self.cwnd = 1.0;
-            self.slow_start = true;
-            eprintln!(
-                "RTO CWND => {} (ssthresh {}) bdp {} rto {}ms",
-                self.cwnd,
-                self.ssthresh,
-                self.inflight.bdp(),
-                self.inflight.rto().as_millis()
-            );
-        }
-    }
-
-    fn cubic_update(&mut self, now: Instant) {
-        let delta_t = now
-            .saturating_duration_since(self.last_cubic)
-            .as_secs_f64()
-            .min(0.1);
-        self.last_cubic = now;
-        self.cubic_secs += delta_t;
-        let t = self.cubic_secs;
-        let k = (self.cwnd_max / 2.0).powf(0.333);
-        let wt = 0.4 * (t - k).powf(3.0) + self.cwnd_max;
-        let new_cwnd = wt.min(10000.0);
-        self.cwnd = new_cwnd;
-        // self.cwnd = 300.0;
     }
 }
