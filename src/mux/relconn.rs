@@ -341,7 +341,7 @@ async fn relconn_actor(
                         } else {
                             SteadyState {
                                 stream_id,
-                                conn_vars,
+                                conn_vars, 
                             }
                         }
                     }
