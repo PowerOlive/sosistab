@@ -9,7 +9,7 @@ use std::thread;
 use std::{net::UdpSocket, sync::Arc};
 
 lazy_static! {
-    static ref EXECUTOR: Arc<Executor> = {
+    static ref EXECUTOR: Arc<Executor<'static>> = {
         let ex = Arc::new(Executor::new());
         for i in 1..=num_cpus::get() {
             let builder = thread::Builder::new().name(format!("sosistab-{}", i));
