@@ -81,7 +81,9 @@ impl StdAEAD {
         if plain.len() < target_len {
             plain.extend_from_slice(&vec![0; target_len - plain.len()]);
         }
-        self.encrypt(&plain, rand::thread_rng().gen())
+        let encrypted = self.encrypt(&plain, rand::thread_rng().gen());
+        log::trace!("PAD and ENCRYPT {} => {}", plain.len(), encrypted.len());
+        encrypted
     }
 
     /// Decrypt and depad.
