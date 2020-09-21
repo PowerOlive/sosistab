@@ -79,7 +79,7 @@ pub async fn connect(
     unimplemented!()
 }
 
-const SHARDS: u8 = 4;
+const SHARDS: u8 = 1;
 const RESET_MILLIS: u128 = 1000;
 
 async fn init_session(
