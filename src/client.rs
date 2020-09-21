@@ -80,7 +80,7 @@ pub async fn connect(
 }
 
 const SHARDS: u8 = 1;
-const RESET_MILLIS: u128 = 1000;
+const RESET_MILLIS: u128 = 5000;
 
 async fn init_session(
     cookie: crypt::Cookie,
