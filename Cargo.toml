@@ -1,6 +1,6 @@
 [package]
 name = "sosistab"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["nullchinchilla <nullchinchilla@pm.me>"]
 edition = "2018"
 
@@ -34,6 +34,7 @@ slice-deque= "0.3.0"
 async-channel= "1.4.2"
 probability= "0.17.0"
 log= "0.4.11"
+async-global-executor="1"
 async-lock= "1"
 async-mutex= "1.3.0"
 priority-queue= "1.0.0"

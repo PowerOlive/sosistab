@@ -28,7 +28,7 @@ lazy_static! {
 
 /// Spawns a future onto the sosistab worker.
 pub fn spawn<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> smol::Task<T> {
-    EXECUTOR.spawn(future)
+    async_global_executor::spawn(future)
 }
 
 /// Create a new UDP socket that has a largeish buffer and isn't bound to anything.
