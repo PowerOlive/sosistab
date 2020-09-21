@@ -95,7 +95,6 @@ impl ListenerActor {
                     if let Some((sess, sess_crypt)) = session_table.lookup(addr) {
                         // try feeding it into the session
                         if let Some(dframe) = sess_crypt.pad_decrypt::<msg::DataFrame>(buffer) {
-                            log::trace!("{} associated with existing session", addr);
                             drop(sess.send(dframe).await);
                             continue;
                         } else {

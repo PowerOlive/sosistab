@@ -171,6 +171,7 @@ impl FrameDecoder {
 fn pre_encode(pkt: &[u8], len: usize) -> BytesMut {
     assert!(pkt.len() <= 65535);
     assert!(pkt.len() + 2 <= len);
+    log::trace!("pre-encoding pkt with len {} => {}", pkt.len(), len);
     let hdr = (pkt.len() as u16).to_le_bytes();
     let mut bts = BytesMut::with_capacity(len);
     bts.extend_from_slice(&hdr);
