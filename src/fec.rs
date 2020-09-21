@@ -26,13 +26,13 @@ impl FrameEncoder {
     /// Encodes a slice of packets into more packets.
     pub fn encode(&mut self, measured_loss: u8, pkts: &[Bytes]) -> Vec<Bytes> {
         // first we precode the packets
-        let mut padded_pkts: Vec<BytesMut> = pkts.iter().map(|p| pre_encode(p, 1400)).collect();
+        let mut padded_pkts: Vec<BytesMut> = pkts.iter().map(|p| pre_encode(p, 1300)).collect();
         // then we get an encoder for this size
         let data_shards = pkts.len();
         let parity_shards = self.repair_len(measured_loss, pkts.len());
         // then we encode
         // prepare the space for in-place mutation
-        let mut parity_shard_space = vec![[0u8; 1400]; parity_shards];
+        let mut parity_shard_space = vec![[0u8; 1300]; parity_shards];
         let mut padded_pkts: Vec<&mut [u8]> = padded_pkts.iter_mut().map(|v| v.as_mut()).collect();
         for r in parity_shard_space.iter_mut() {
             padded_pkts.push(r);
@@ -91,7 +91,7 @@ impl FrameEncoder {
 pub struct FrameDecoder {
     data_shards: usize,
     parity_shards: usize,
-    space: Vec<([u8; 1400])>,
+    space: Vec<([u8; 1300])>,
     present: Vec<bool>,
     rs_decoder: galois_8::ReedSolomon,
     done: bool,
@@ -102,7 +102,7 @@ impl FrameDecoder {
         FrameDecoder {
             data_shards,
             parity_shards,
-            space: vec![[0u8; 1400]; data_shards + parity_shards],
+            space: vec![[0u8; 1300]; data_shards + parity_shards],
             present: vec![false; data_shards + parity_shards],
             rs_decoder: galois_8::ReedSolomon::new(data_shards, parity_shards.max(1)).unwrap(),
             done: false,
