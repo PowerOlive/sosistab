@@ -53,7 +53,12 @@ impl FrameEncoder {
         toret.extend(
             padded_pkts
                 .iter()
-                .map(|p| snap::raw::Encoder::new().compress_vec(&p).unwrap())
+                .map(|p| {
+                    let pre_len = p.len();
+                    let post = snap::raw::Encoder::new().compress_vec(&p).unwrap();
+                    log::trace!("compressing {} => {}", pre_len, post.len());
+                    post
+                })
                 .map(|vec| Bytes::copy_from_slice(&vec)),
         );
         toret
